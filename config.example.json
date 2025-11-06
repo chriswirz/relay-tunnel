@@ -1,0 +1,33 @@
+{
+  "server": {
+    "enabled": false,
+    "http": ":7000",
+    "udp": ":7001",
+    "public_udp": "your.host.example:7001",
+    "verbose": false
+  },
+  "expose": {
+    "enabled": false,
+    "server": "ws://your.host.example:7000/signal",
+    "code": "your-session-code",
+    "allow_dial": true,
+    "allow": [
+      "127.0.0.1:8080"
+    ],
+    "allow_exec": false,
+    "file_root": "/srv/share",
+    "verbose": false
+  },
+  "connect": {
+    "enabled": false,
+    "server": "ws://your.host.example:7000/signal",
+    "code": "your-session-code",
+    "forward": [
+      "9000:127.0.0.1:8080"
+    ],
+    "socks": [
+      "1080"
+    ],
+    "verbose": false
+  }
+}

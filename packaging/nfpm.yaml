@@ -1,0 +1,55 @@
+# nfpm config used by the GitHub Actions pipeline to build .deb and .rpm
+# packages. ARCH and PKG_VERSION are supplied by the pipeline, which also stages
+# the binary for the target architecture at packaging/relay-tunnel (nfpm does
+# not expand environment variables inside contents paths).
+name: relay-tunnel
+arch: ${ARCH}
+platform: linux
+version: ${PKG_VERSION}
+section: net
+priority: optional
+maintainer: relay-tunnel maintainers
+description: |
+  Direct peer-to-peer tunnels with NAT traversal. relay-tunnel connects two
+  machines directly (UDP hole punching + QUIC) with the help of a lightweight
+  rendezvous server for signaling, falling back to a server relay only when a
+  direct path is impossible. Supports TCP port forwarding, a SOCKS5 proxy,
+  file transfer and remote command execution over one encrypted connection.
+homepage: https://github.com/chriswirz/relay-tunnel
+license: MIT
+contents:
+  - src: packaging/relay-tunnel
+    dst: /usr/bin/relay-tunnel
+    file_info:
+      mode: 0755
+  - src: README.md
+    dst: /usr/share/doc/relay-tunnel/README.md
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/doc/relay-tunnel/LICENSE
+    file_info:
+      mode: 0644
+  # systemd unit + defaults for running the rendezvous server as a daemon.
+  - src: packaging/relay-tunnel-server.service
+    dst: /lib/systemd/system/relay-tunnel-server.service
+    file_info:
+      mode: 0644
+  - src: packaging/relay-tunnel-server.env
+    dst: /etc/relay-tunnel/server.env
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+overrides:
+  deb:
+    depends:
+      - adduser
+  rpm:
+    depends:
+      - shadow-utils
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+  postremove: packaging/scripts/postremove.sh
