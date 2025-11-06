@@ -1,0 +1,675 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "relay-tunnel rendezvous server",
+    "version": "1.0.0",
+    "summary": "Administrative view of the sessions and relay routes this server is carrying.",
+    "description": "The rendezvous server introduces two peers to each other. A host and a client\nboth open a WebSocket to `/signal` with the same session code; once both have\nreflected their public UDP address the server hands each the other's, and they\npunch a direct QUIC connection. Nothing in the tunnel itself passes through\nthis server.\n\nWhen a direct path cannot be punched, the peers fall back to relaying their\ndatagrams through the server's UDP port. Those pairings are the relay routes\nbelow. They outlive the signaling WebSocket, because peers keep relaying after\nthe rendezvous is over, and are reclaimed once idle.\n\nThis API describes both: sessions are the rendezvous in progress, relays are\nthe traffic still going through the server. Deleting a session ends a\nrendezvous; deleting a relay route cuts a pair that never got a direct path.\nNeither reaches a tunnel that already punched through, because that traffic no\nlonger touches this server at all.\n\nEvery endpoint except `/healthz` and this document needs an administrator: a\nbrowser signed in through `/api/v1/auth/login`, holding the session cookie. On\na server whose config carries no password hash, the first sign in is\n`admin`/`admin` and nothing is readable until a new password is chosen.\n",
+    "license": {
+      "name": "MIT"
+    },
+    "contact": {
+      "name": "relay-tunnel",
+      "url": "https://github.com/chriswirz/relay-tunnel"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "This server, whichever host is serving this document"
+    }
+  ],
+  "tags": [
+    {
+      "name": "auth",
+      "description": "Administrator sign in for the web interface."
+    },
+    {
+      "name": "sessions",
+      "description": "Rendezvous codes and the peers signaling through them."
+    },
+    {
+      "name": "relays",
+      "description": "Relayed pairs whose datagrams pass through this server."
+    },
+    {
+      "name": "meta",
+      "description": "Server status, health, and machine readable documentation."
+    }
+  ],
+  "security": [
+    {
+      "cookieAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "getAuthSession",
+        "tags": ["auth"],
+        "summary": "Report who, if anyone, this browser is signed in as",
+        "description": "Answers 200 either way; `authenticated` is the answer. `password_unset` tells the login form that this server has never had a password, so it can say which credentials to use.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The current sign in state.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthStatus" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "login",
+        "tags": ["auth"],
+        "summary": "Sign in as the administrator",
+        "description": "Sets the session cookie. While no password hash is configured this accepts the configured username with the password `admin`, once, and the returned `must_change_password` holds that session at the account page until a real password is chosen.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": { "type": "string", "examples": ["admin"] },
+                  "password": { "type": "string", "format": "password" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; the session cookie is set.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "The admin session cookie.",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthStatus" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": {
+            "description": "The username or the password was wrong. Which one is not said.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "tags": ["auth"],
+        "summary": "Sign out, revoking this browser's session",
+        "security": [],
+        "responses": {
+          "204": { "description": "Signed out. The cookie is cleared whether or not it was valid." }
+        }
+      }
+    },
+    "/api/v1/auth/account": {
+      "post": {
+        "operationId": "changeAccount",
+        "tags": ["auth"],
+        "summary": "Change the administrator username, password, or both",
+        "description": "There is exactly one administrator account. Sending `new_username` renames it rather than creating another, so after `admin` becomes `crwirz` nothing signs in as `admin` again. The password is hashed with PBKDF2-HMAC-SHA256 and written to the config file, and every other signed in browser is dropped.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["current_password"],
+                "properties": {
+                  "current_password": { "type": "string", "format": "password" },
+                  "new_username": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 32,
+                    "pattern": "^[a-z0-9._-]+$",
+                    "description": "Letters, digits, dot, dash and underscore. Omit to keep the current name."
+                  },
+                  "new_password": {
+                    "type": "string",
+                    "format": "password",
+                    "minLength": 8,
+                    "description": "Omit to keep the current password, unless none has been set yet."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed and saved.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthStatus" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "The change could not be written to the config file, so nothing was changed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "operationId": "getStatus",
+        "tags": ["meta"],
+        "summary": "What this server is and what it is currently carrying",
+        "responses": {
+          "200": {
+            "description": "Addresses, uptime, live counts and lifetime totals.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Status" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "tags": ["sessions"],
+        "summary": "Every rendezvous code with a peer currently on it",
+        "description": "A session appears when its first peer connects and disappears when its last one leaves, so this is signaling in progress rather than a history. Oldest first.",
+        "responses": {
+          "200": {
+            "description": "The live sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["sessions"],
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Session" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/sessions/{code}": {
+      "parameters": [
+        {
+          "name": "code",
+          "in": "path",
+          "required": true,
+          "description": "The session code the two peers agreed on.",
+          "schema": { "type": "string" }
+        }
+      ],
+      "get": {
+        "operationId": "getSession",
+        "tags": ["sessions"],
+        "summary": "One rendezvous code",
+        "responses": {
+          "200": {
+            "description": "The session.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Session" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSession",
+        "tags": ["sessions"],
+        "summary": "Close a rendezvous",
+        "description": "Both peers' signaling connections are closed and the relay routes for their tokens are reclaimed. A pair that already punched a direct path is unaffected: that traffic no longer passes through this server. A peer that is still running will reconnect and start a new rendezvous.",
+        "responses": {
+          "204": { "description": "Closed." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/relays": {
+      "get": {
+        "operationId": "listRelays",
+        "tags": ["relays"],
+        "summary": "Every relay route this server is holding",
+        "description": "One entry per peer, so a relaying pair is two entries pointing at each other through `peer_token`. Busiest first. A route with no `peer_token` is a peer that reflected its address but was never paired.",
+        "responses": {
+          "200": {
+            "description": "The live relay routes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["relays"],
+                  "properties": {
+                    "relays": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Relay" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "delete": {
+        "operationId": "pruneRelays",
+        "tags": ["relays"],
+        "summary": "Reclaim every relay route idle longer than a given window",
+        "description": "The background sweep already does this at the server's relay TTL; this is the same thing on demand, and with a shorter window when a server is carrying more relayed traffic than it should be.",
+        "parameters": [
+          {
+            "name": "idle_for",
+            "in": "query",
+            "required": true,
+            "description": "How long a route must have been idle. Only these windows are accepted.",
+            "schema": {
+              "type": "string",
+              "enum": ["1m", "5m", "15m", "1h", "6h", "24h"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What was reclaimed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["idle_for", "deleted", "tokens"],
+                  "properties": {
+                    "idle_for": { "type": "string", "examples": ["15m"] },
+                    "deleted": { "type": "integer", "examples": [2] },
+                    "tokens": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/v1/relays/{token}": {
+      "parameters": [
+        {
+          "name": "token",
+          "in": "path",
+          "required": true,
+          "description": "The relay token, as issued to a peer during signaling.",
+          "schema": { "type": "string", "pattern": "^[0-9a-f]{16}$" }
+        }
+      ],
+      "delete": {
+        "operationId": "deleteRelay",
+        "tags": ["relays"],
+        "summary": "Drop a relayed pair",
+        "description": "Reclaims this route and the one pointing back at it, which together are the pair. A pair still relaying will stop; one that punched a direct path is unaffected.",
+        "responses": {
+          "204": { "description": "Dropped." },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "health",
+        "tags": ["meta"],
+        "summary": "Liveness probe",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The server is up.",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "examples": ["ok\n"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "tags": ["meta"],
+        "summary": "This document",
+        "description": "Unauthenticated on purpose: it documents how to authenticate. Also served at /api/v1/openapi.json.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI specification for this server.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "cookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "relay_tunnel_admin",
+        "description": "Session cookie set by /api/v1/auth/login. It is HttpOnly, so a browser sends it automatically and script cannot read it."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Not signed in, or signed in but still on the default password.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "No such session or relay route. They are in-memory state, so one can disappear between a list and a call against it.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The request body or a parameter was not acceptable.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string", "description": "A sentence naming what was wrong." }
+        }
+      },
+      "AuthStatus": {
+        "type": "object",
+        "required": ["authenticated", "must_change_password", "password_unset"],
+        "properties": {
+          "authenticated": { "type": "boolean" },
+          "username": { "type": "string", "examples": ["admin"] },
+          "must_change_password": {
+            "type": "boolean",
+            "description": "This session signed in with the default password and can do nothing else until it picks a new one."
+          },
+          "password_unset": {
+            "type": "boolean",
+            "description": "The server has no administrator password at all, so admin/admin is currently accepted."
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "enum": ["host", "client"],
+        "description": "`host` is the machine being reached; `client` is the one reaching it."
+      },
+      "Peer": {
+        "type": "object",
+        "required": ["role", "token", "ready", "joined_at"],
+        "properties": {
+          "role": { "$ref": "#/components/schemas/Role" },
+          "token": {
+            "type": "string",
+            "description": "The relay token issued to this peer, which is also the key of its relay route.",
+            "examples": ["3f9a1c2b4d5e6f70"]
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "The peer has reflected its public address and, if it is a host, published its certificate fingerprint. Pairing waits for both peers to be ready."
+          },
+          "name": {
+            "type": "string",
+            "description": "Label the peer gave for itself, absent when it gave none. Peer-supplied and unverified: useful for telling machines apart, not for deciding anything. Control characters are stripped and the value is capped at 64 bytes.",
+            "examples": ["workshop-pi"]
+          },
+          "local_addrs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Addresses the peer reports for its own networks, passed to the other peer unverified. Two peers sharing a public address are behind one NAT and connect over these instead of hairpinning.",
+            "examples": [["192.168.0.162:48527"]]
+          },
+          "public_addr": {
+            "type": "string",
+            "description": "The address this peer's UDP was reflected at.",
+            "examples": ["203.0.113.7:51820"]
+          },
+          "cert_fingerprint": {
+            "type": "string",
+            "description": "The host's QUIC certificate fingerprint, which the client pins. Hosts only."
+          },
+          "remote_addr": {
+            "type": "string",
+            "description": "Where the signaling WebSocket came from, which is not necessarily where the peer's UDP is seen."
+          },
+          "joined_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": ["code", "created_at", "paired", "peers"],
+        "properties": {
+          "code": { "type": "string", "examples": ["quiet-harbor-8241"] },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the first peer arrived on this code."
+          },
+          "paired": {
+            "type": "boolean",
+            "description": "Both peers were ready and have been told each other's address."
+          },
+          "paired_at": { "type": "string", "format": "date-time" },
+          "peers": {
+            "type": "array",
+            "maxItems": 2,
+            "description": "Host first when both are present. A code accepts one of each role.",
+            "items": { "$ref": "#/components/schemas/Peer" }
+          }
+        }
+      },
+      "Relay": {
+        "type": "object",
+        "required": ["token", "first_seen", "last_seen", "expires_at", "packets", "bytes"],
+        "properties": {
+          "token": { "type": "string", "examples": ["3f9a1c2b4d5e6f70"] },
+          "peer_token": {
+            "type": "string",
+            "description": "Where this token's datagrams are forwarded. Absent for a peer that reflected but was never paired."
+          },
+          "code": {
+            "type": "string",
+            "description": "The session the pairing came from. Absent for an unpaired token."
+          },
+          "role": { "$ref": "#/components/schemas/Role" },
+          "addr": {
+            "type": "string",
+            "description": "Where this peer's datagrams last came from, and where its peer's are sent.",
+            "examples": ["203.0.113.7:51820"]
+          },
+          "first_seen": { "type": "string", "format": "date-time" },
+          "last_seen": { "type": "string", "format": "date-time" },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the idle sweep reclaims this route if nothing more arrives on it."
+          },
+          "packets": {
+            "type": "integer",
+            "description": "Datagrams received from this peer for relaying. Reflection probes are not counted."
+          },
+          "bytes": { "type": "integer", "description": "Payload bytes received from this peer for relaying." }
+        }
+      },
+      "Totals": {
+        "type": "object",
+        "required": [
+          "peers_joined",
+          "pairs",
+          "reflections",
+          "relayed_packets",
+          "relayed_bytes",
+          "dropped_packets"
+        ],
+        "properties": {
+          "peers_joined": { "type": "integer", "description": "Signaling connections accepted since startup." },
+          "pairs": { "type": "integer", "description": "Rendezvous completed since startup." },
+          "reflections": { "type": "integer", "description": "Address reflection probes answered." },
+          "relayed_packets": { "type": "integer" },
+          "relayed_bytes": { "type": "integer" },
+          "dropped_packets": {
+            "type": "integer",
+            "description": "Relay datagrams with nowhere to forward them, usually a peer still relaying after its pairing was reclaimed."
+          }
+        }
+      },
+      "UDP": {
+        "type": "object",
+        "description": "Health of the reflection/relay socket. Signaling is usually proxied and can work while UDP never arrives, in which case peers only report \"reflection timed out\"; packets_received distinguishes probes that never land from probes that land and fail.",
+        "required": ["bound_addr", "advertised_derived", "packets_received", "invalid_packets"],
+        "properties": {
+          "bound_addr": {
+            "type": "string",
+            "description": "What the UDP socket listens on.",
+            "examples": [":1186"]
+          },
+          "advertised_addr": {
+            "type": "string",
+            "description": "The address peers are told to probe.",
+            "examples": ["relay.example.com:1186"]
+          },
+          "advertised_derived": {
+            "type": "boolean",
+            "description": "True when no public_udp is configured, so the advertised address is derived per-request from the Host header."
+          },
+          "packets_received": {
+            "type": "integer",
+            "description": "Datagrams read off the UDP socket since startup, valid or not. Zero while peers time out means nothing reaches the port."
+          },
+          "invalid_packets": {
+            "type": "integer",
+            "description": "Datagrams discarded for being too short or not carrying the RT01 magic."
+          },
+          "last_packet_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When a datagram last arrived. Absent if none ever has."
+          },
+          "last_reflection_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When a reflection was last answered. Absent if none ever has."
+          }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "required": [
+          "version",
+          "started_at",
+          "uptime_seconds",
+          "http_addr",
+          "udp_addr",
+          "sessions",
+          "sessions_paired",
+          "peers_connected",
+          "relays",
+          "relay_ttl_seconds",
+          "totals",
+          "udp"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The operator's label for this server, absent when unset.",
+            "examples": ["rendezvous"]
+          },
+          "version": { "type": "string", "examples": ["v0.1.0042"] },
+          "started_at": { "type": "string", "format": "date-time" },
+          "uptime_seconds": { "type": "number" },
+          "http_addr": {
+            "type": "string",
+            "description": "The signaling and admin listener.",
+            "examples": [":7000"]
+          },
+          "udp_addr": {
+            "type": "string",
+            "description": "The reflection and relay listener.",
+            "examples": [":7001"]
+          },
+          "public_udp": {
+            "type": "string",
+            "description": "The UDP address advertised to peers, when the config pins one.",
+            "examples": ["relay.example.com:7001"]
+          },
+          "public_url": {
+            "type": "string",
+            "description": "The signaling URL operators should hand out, when the config names one.",
+            "examples": ["wss://relay.example.com/signal"]
+          },
+          "sessions": { "type": "integer" },
+          "sessions_paired": { "type": "integer" },
+          "peers_connected": { "type": "integer", "description": "Signaling WebSockets currently open." },
+          "relays": { "type": "integer" },
+          "relay_ttl_seconds": {
+            "type": "number",
+            "description": "How long a relay route survives with no traffic."
+          },
+          "totals": { "$ref": "#/components/schemas/Totals" },
+          "udp": { "$ref": "#/components/schemas/UDP" }
+        }
+      }
+    }
+  }
+}

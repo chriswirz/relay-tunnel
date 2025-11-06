@@ -1,0 +1,44 @@
+{
+  "server": {
+    "enabled": false,
+    "name": "rendezvous",
+    "http": ":7000",
+    "udp": ":7001",
+    "public_udp": "your.host.example:7001",
+    "public_url": "wss://your.host.example/signal",
+    "verbose": false,
+    "admin": {
+      "disabled": false,
+      "username": "admin",
+      "password_hash": "",
+      "session_hours": 12,
+      "trust_forwarded_headers": false
+    }
+  },
+  "expose": {
+    "enabled": false,
+    "name": "workshop-pi",
+    "server": "ws://your.host.example:7000/signal",
+    "code": "your-session-code",
+    "allow_dial": true,
+    "allow": [
+      "127.0.0.1:8080"
+    ],
+    "allow_exec": false,
+    "file_root": "/srv/share",
+    "verbose": false
+  },
+  "connect": {
+    "enabled": false,
+    "name": "laptop",
+    "server": "ws://your.host.example:7000/signal",
+    "code": "your-session-code",
+    "forward": [
+      "9000:127.0.0.1:8080"
+    ],
+    "socks": [
+      "1080"
+    ],
+    "verbose": false
+  }
+}

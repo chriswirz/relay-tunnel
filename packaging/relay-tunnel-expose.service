@@ -1,0 +1,56 @@
+[Unit]
+Description=relay-tunnel expose (make this machine reachable through a rendezvous server)
+Documentation=https://github.com/chriswirz/relay-tunnel
+# The host dials the signaling server as soon as it starts, so wait for a
+# routable address rather than only for the network stack to exist.
+After=network-online.target
+Wants=network-online.target
+# Rate-limit restarts so a genuinely broken config surfaces as a failed unit
+# rather than an endless restart loop. These belong in [Unit], not [Service].
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+# The user the exposed services are dialed as. The policy in config.json is what
+# limits that, so run this as an unprivileged account, not root.
+User=nvidia
+Group=nvidia
+
+# Settings come from the config file; "enabled": true in its expose section is
+# what makes this run without a subcommand.
+Environment=RT_CONFIG=/etc/relay-tunnel/config.json
+# Optional overrides, e.g. RT_EXTRA_ARGS=-v. The leading "-" makes the file
+# optional, so the unit starts whether or not it exists.
+EnvironmentFile=-/etc/relay-tunnel/expose.env
+ExecStart=/usr/local/bin/relay-tunnel --config ${RT_CONFIG} ${RT_EXTRA_ARGS}
+
+# relay-tunnel reconnects to the signaling server on its own with backoff, so a
+# process that has exited has hit something it could not recover from - a
+# missing config, a bad URL - and restarting forever would hide it. Restart
+# anyway, because the common cause is a reboot ordering race or a server that
+# was down at boot, but rate-limit it so a genuinely broken config shows up as a
+# failed unit instead of a log full of restarts.
+Restart=always
+RestartSec=5
+
+# Hardening. The expose side writes nothing: it reads the config, dials out to
+# the signaling server, and opens the TCP targets its policy allows. Nothing
+# here needs to be relaxed unless file_root is added to the config, which needs
+# a ReadWritePaths entry for that directory (and only for "put"; "get" is fine
+# read-only).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# AF_UNIX is for name resolution through nsswitch, not for listening.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

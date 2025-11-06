@@ -1,0 +1,39 @@
+# Binaries
+/relay-tunnel
+/relay-tunnel.exe
+/rt.exe
+# Host builds of the examples, from ./build.sh --examples.
+/relay-sync
+/relay-sync.exe
+/dist/
+*.exe
+*.test
+*.out
+
+# Logs & scratch
+*.log
+/hostroot/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Packaging build artifacts
+/out/
+/packaging/relay-tunnel
+/packaging/*.deb
+/packaging/*.rpm
+
+# User config (may contain a session code)
+/config.json
+
+# Web interface: node's own directories, plus the static export. The export is
+# a build artifact, but internal/webui/out must exist for the go:embed in that
+# package to resolve, so its .gitkeep is kept.
+/web/node_modules/
+/web/.next/
+/web/out/
+/web/tsconfig.tsbuildinfo
+/internal/webui/out/*
+!/internal/webui/out/.gitkeep

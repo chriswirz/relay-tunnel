@@ -1,0 +1,317 @@
+name: CI
+
+# Every push and pull request runs the full checks. A push to the default
+# branch, once those checks pass, publishes a rolling prerelease named after the
+# branch so the newest build is always one click away; a v* tag publishes a
+# versioned release with the same artifacts.
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (race)
+        if: runner.os != 'Windows'
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        # Use bash (present on Windows runners): PowerShell mangles the
+        # `-coverprofile=coverage.out ./...` arguments into a bogus ".out" package.
+        shell: bash
+        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  integration:
+    name: Integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: true
+      - name: Multi-process integration tests
+        run: go test -tags integration -timeout 300s -v ./test/integration/...
+
+  tidy:
+    name: go mod tidy is clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - run: go mod tidy
+      - name: Ensure no changes
+        run: git diff --exit-code
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt -w:"
+            echo "$unformatted"
+            exit 1
+          fi
+      # Install golangci-lint with this workflow's Go toolchain so its build Go
+      # version is not older than the module's targeted Go version.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      - name: Run golangci-lint
+        run: golangci-lint run --timeout=5m
+
+  # meta decides whether this run publishes a release and under what name. It is
+  # the single source of truth for the version so the build, package and publish
+  # jobs all agree.
+  meta:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.m.outputs.is_release }}
+      version: ${{ steps.m.outputs.version }}
+      pkg_version: ${{ steps.m.outputs.pkg_version }}
+      tag: ${{ steps.m.outputs.tag }}
+      name: ${{ steps.m.outputs.name }}
+      make_latest: ${{ steps.m.outputs.make_latest }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: m
+        # Version is v0.1.<run number> for a default-branch build (padded so it
+        # sorts as text and as a number), and the tag itself for a v* tag.
+        run: |
+          series="$(cat VERSION)"
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+            v="${GITHUB_REF_NAME}"
+            {
+              echo "is_release=true"
+              echo "version=${v}"
+              echo "pkg_version=${v#v}"
+              echo "tag=${v}"
+              echo "name=${v}"
+              echo "make_latest=false"
+            } >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ] && { [ "${GITHUB_REF}" = "refs/heads/main" ] || [ "${GITHUB_REF}" = "refs/heads/master" ]; }; then
+            build="$(printf '%04d' "${GITHUB_RUN_NUMBER}")"
+            {
+              echo "is_release=true"
+              echo "version=v${series}.${build}"
+              echo "pkg_version=${series}.${build}"
+              echo "tag=${GITHUB_REF_NAME}"
+              echo "name=v${series}.${build} ($(git rev-parse --short HEAD))"
+              echo "make_latest=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # From here down runs only for a release, and only after every check passed.
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [test, integration, tidy, lint, meta]
+    if: needs.meta.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: true
+      # The admin web interface is exported first, into internal/webui/out,
+      # where the Go build embeds it. Without this step the released binaries
+      # would serve the API with no interface in front of it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the web interface
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+        working-directory: web
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          mkdir -p dist dist/examples
+          name="relay-tunnel-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/${name}" ./cmd/relay-tunnel
+          ( cd dist && sha256sum "${name}" > "${name}.sha256" )
+          # The examples ship too, so they can be run without a toolchain. They
+          # are discovered rather than named, so a new one is picked up here on
+          # its own. No version stamp: none of them carries one.
+          for dir in examples/*/; do
+            [ -f "${dir}main.go" ] || continue
+            ex="$(basename "$dir")"
+            out="dist/examples/${ex}-${GOOS}-${GOARCH}${{ matrix.ext }}"
+            go build -trimpath -ldflags "-s -w" -o "$out" "./${dir%/}"
+          done
+          ls -laR dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-tunnel-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  packages:
+    name: packages (${{ matrix.arch }})
+    needs: [build, meta]
+    if: needs.meta.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: relay-tunnel-linux-${{ matrix.arch }}
+          path: dist
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+      - name: Build .deb and .rpm
+        env:
+          ARCH: ${{ matrix.arch }}
+          PKG_VERSION: ${{ needs.meta.outputs.pkg_version }}
+        run: |
+          cp "dist/relay-tunnel-linux-${ARCH}" packaging/relay-tunnel
+          chmod +x packaging/relay-tunnel
+          mkdir -p out
+          nfpm package -f packaging/nfpm.yaml -p deb -t out/
+          nfpm package -f packaging/nfpm.yaml -p rpm -t out/
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-tunnel-packages-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [build, packages, meta]
+    if: needs.meta.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: relay-tunnel-*
+          path: staging
+          merge-multiple: true
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist dist/examples
+          # merge-multiple flattens each artifact's contents into staging/.
+          find staging -maxdepth 1 -type f -exec mv {} dist/ \;
+          if [ -d staging/examples ]; then mv staging/examples/* dist/examples/ 2>/dev/null || true; fi
+          # A single checksums file over every artifact (binaries, packages and
+          # the example). Drop the per-file .sha256 so they are not summed over
+          # themselves, and exclude SHA256SUMS itself.
+          ( cd dist && rm -f *.sha256 && \
+            find . -type f ! -name SHA256SUMS | sed 's|^\./||' | sort | xargs sha256sum > SHA256SUMS )
+          ls -laR dist
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.name }}
+          make_latest: ${{ needs.meta.outputs.make_latest }}
+          prerelease: false
+          draft: false
+          generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          files: |
+            dist/*
+            dist/examples/*
+            deploy/nginx/relay-tunnel.conf
+            packaging/relay-tunnel-server.service
+          body: |
+            Direct peer-to-peer tunnels with NAT traversal.
+
+            Get started:
+
+            ```
+            relay-tunnel --example-config > config.json
+            relay-tunnel server            # run the rendezvous server
+            relay-tunnel expose  --server ws://HOST:7000/signal --allow-dial
+            relay-tunnel connect --server ws://HOST:7000/signal --code CODE -L 9000:127.0.0.1:8080
+            ```
+
+            Linux `.deb` and `.rpm` packages and the `relay-sync` example are attached.
