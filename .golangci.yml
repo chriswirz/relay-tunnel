@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # errcheck (on by default) is disabled: this codebase deliberately ignores
+  # errors from deferred Close, flag.Parse (ExitOnError), and best-effort
+  # io.Copy on network streams, which would otherwise produce noise without
+  # catching real bugs. The remaining default linters (govet, ineffassign,
+  # staticcheck, unused) stay on, plus the extras enabled below.
+  disable:
+    - errcheck
+  enable:
+    - misspell
+    - unconvert
+    - bodyclose
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

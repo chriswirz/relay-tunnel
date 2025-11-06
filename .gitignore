@@ -1,0 +1,26 @@
+# Binaries
+/relay-tunnel
+/relay-tunnel.exe
+/rt.exe
+/dist/
+*.exe
+*.test
+*.out
+
+# Logs & scratch
+*.log
+/hostroot/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Packaging build artifacts
+/out/
+/packaging/relay-tunnel
+/packaging/*.deb
+/packaging/*.rpm
+
+# User config (may contain a session code)
+/config.json

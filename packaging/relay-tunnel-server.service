@@ -1,0 +1,30 @@
+[Unit]
+Description=relay-tunnel rendezvous server (signaling + NAT reflection/relay)
+Documentation=https://github.com/chriswirz/relay-tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay-tunnel
+Group=relay-tunnel
+EnvironmentFile=/etc/relay-tunnel/server.env
+ExecStart=/usr/bin/relay-tunnel server --http ${RT_HTTP_ADDR} --udp ${RT_UDP_ADDR} ${RT_EXTRA_ARGS}
+Restart=on-failure
+RestartSec=2
+
+# Hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
