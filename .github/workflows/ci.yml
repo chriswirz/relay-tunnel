@@ -188,7 +188,7 @@ jobs:
       # The admin web interface is exported first, into internal/webui/out,
       # where the Go build embeds it. Without this step the released binaries
       # would serve the API with no interface in front of it.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20.x'
           cache: npm
